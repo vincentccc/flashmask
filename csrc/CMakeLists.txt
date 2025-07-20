@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.9 FATAL_ERROR)
 project(flash-attention LANGUAGES CXX CUDA)
+set(FLASH_ATTN_WITH_TORCH ON)
 
 find_package(Git REQUIRED)
 
@@ -123,6 +124,7 @@ if(NOT SKIP_BUILD_FA)
     --expt-relaxed-constexpr
     --expt-extended-lambda
     --use_fast_math
+    -DFLASH_ATTN_WITH_TORCH=${FLASH_ATTN_WITH_TORCH}
     "${FA_GENCODE_OPTION}"
     >)
   

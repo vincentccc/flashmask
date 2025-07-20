@@ -148,59 +148,63 @@ if not SKIP_CUDA_BUILD:
     # cc_flag.append("arch=compute_75,code=sm_75")
     cc_flag.append("-gencode")
     cc_flag.append("arch=compute_80,code=sm_80")
-    if bare_metal_version >= Version("11.8"):
-        cc_flag.append("-gencode")
-        cc_flag.append("arch=compute_90,code=sm_90")
+    # if bare_metal_version >= Version("11.8"):
+    #     cc_flag.append("-gencode")
+    #     cc_flag.append("arch=compute_90,code=sm_90")
 
     # HACK: The compiler flag -D_GLIBCXX_USE_CXX11_ABI is set to be the same as
     # torch._C._GLIBCXX_USE_CXX11_ABI
     # https://github.com/pytorch/pytorch/blob/8472c24e3b5b60150096486616d98b7bea01500b/torch/utils/cpp_extension.py#L920
     if FORCE_CXX11_ABI:
         torch._C._GLIBCXX_USE_CXX11_ABI = True
+    import glob
+    flash_cu_files = glob.glob("csrc/flash_attn/src/flash_*.cu")
     ext_modules.append(
         CUDAExtension(
             name="flash_attn_2_cuda",
             sources=[
+                *flash_cu_files,
                 "csrc/flash_attn/flash_api.cpp",
-                "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim96_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim224_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim224_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim256_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim32_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim32_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim64_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim64_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim96_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim96_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim128_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim128_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim160_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim160_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim192_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim192_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim224_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim224_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim256_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim256_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim96_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim224_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim224_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_fwd_hdim256_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim32_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim32_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim64_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim64_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim96_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim96_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim128_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim128_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim160_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim160_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim192_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim192_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim224_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim224_bf16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim256_fp16_sm80.cu",
+                # "csrc/flash_attn/src/flash_bwd_hdim256_bf16_sm80.cu",
             ],
             extra_compile_args={
-                "cxx": ["-O3", "-std=c++17"] + generator_flag,
+                "cxx": ["-O3", "-std=c++17", "-DFLASH_ATTN_WITH_TORCH","-Wl,--no-as-needed",] + generator_flag,
                 "nvcc": append_nvcc_threads(
                     [
                         "-O3",
                         "-std=c++17",
+                        # "--compiler-options=-fPIC",
                         "-U__CUDA_NO_HALF_OPERATORS__",
                         "-U__CUDA_NO_HALF_CONVERSIONS__",
                         "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -210,12 +214,26 @@ if not SKIP_CUDA_BUILD:
                         "--use_fast_math",
                         "--ptxas-options=-v",
                         # "--ptxas-options=-O2",
-                        "-lineinfo"
+                        "-lineinfo",
+                        # "-gencode=arch=compute_80,code=sm_80"
                     ]
                     + generator_flag
                     + cc_flag
                 ),
             },
+            library_dirs=[
+            "/usr/local/lib/python3.10/dist-packages/torch/lib",
+            "/usr/local/cuda/lib64",
+            ],
+            libraries=[
+                "c10",
+                "torch",
+                "torch_cpu",
+                "torch_python",
+                "cudart",
+                "c10_cuda",
+                "torch_cuda",  # 关键：确保链接 torch_cuda
+            ],
             include_dirs=[
                 Path(this_dir) / 'csrc' / 'flash_attn',
                 Path(this_dir) / 'csrc' / 'flash_attn' / 'src',

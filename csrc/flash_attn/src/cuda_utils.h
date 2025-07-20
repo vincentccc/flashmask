@@ -30,7 +30,8 @@ static int GetCurrentDeviceId();
 
 static int GetCudaDeviceCount();
 
-cudaDeviceProp* getCurrentDeviceProperties(int id = -1);
+cudaDeviceProp* getCurrentDeviceProperties();
+// cudaDeviceProp* getCurrentDeviceProperties(int id = -1);
 } // namespace cuda
 } // namespace at
 #endif

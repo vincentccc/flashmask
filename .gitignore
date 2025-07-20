@@ -23,5 +23,5 @@ var/
 # IDE-related
 .idea/
 
-csrc/flash_attn/src/*_sm80.cu
-csrc/flash_attn_v3/*_sm90.cu
+# csrc/flash_attn/src/*_sm80.cu
+# csrc/flash_attn_v3/*_sm90.cu
