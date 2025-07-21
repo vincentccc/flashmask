@@ -14,6 +14,138 @@
 
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == torch::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 
+void set_params_fprop_strided(Flash_fwd_params &params,
+                      // sizes
+                      const size_t b,
+                      const size_t seqlen_q,
+                      const size_t seqlen_k,
+                      const size_t seqlen_q_rounded,
+                      const size_t seqlen_k_rounded,
+                      const size_t h,
+                      const size_t h_k,
+                      const size_t d,
+                      const size_t d_rounded,
+                      // device pointers
+                      void * const q,
+                      void * const k,
+                      void * const v,
+                      void * const out,
+                      void * const cu_seqlens_q_d,
+                      void * const cu_seqlens_k_d,
+                      void * const p_d,
+                      void * const softmax_lse_d,
+                      float p_dropout,
+                      float softmax_scale,
+                      float softmax_unscale,
+                      bool is_causal,
+                      bool is_bf16,
+                      const int q_row_stride,
+                      const int k_row_stride,
+                      const int v_row_stride,
+                      const int q_head_stride,
+                      const int k_head_stride,
+                      const int v_head_stride,
+                      const int o_row_stride,
+                      const int o_head_stride,
+                      const int q_batch_stride,
+                      const int k_batch_stride,
+                      const int v_batch_stride,
+                      const int o_batch_stride,
+                      bool varlen_padded_input = false,
+                      void * attn_mask = nullptr,
+                      void * flashmask_downstart_ptr = nullptr,
+                      void * flashmask_upend_ptr = nullptr,
+                      void * flashmask_downend_ptr = nullptr,
+                      void * flashmask_upstart_ptr = nullptr,
+                      void * flashmask_maxmin_ptr = nullptr,
+                      int mask_head_mod_size = 0,
+                      int mask_seq_q_mod_size = 0) {
+    // Reset the parameters
+    memset(&params, 0, sizeof(params));
+
+    params.is_bf16 = is_bf16;
+    // Set the pointers and strides.
+    params.q_ptr = q;
+    params.k_ptr = k;
+    params.v_ptr = v;
+    // All stride are in elements, not bytes.
+    params.q_row_stride = q_row_stride;
+    params.k_row_stride = k_row_stride;
+    params.v_row_stride = v_row_stride;
+    params.q_head_stride = q_head_stride;
+    params.k_head_stride = k_head_stride;
+    params.v_head_stride = v_head_stride;
+    params.o_ptr = out;
+    params.o_row_stride = o_row_stride;
+    params.o_head_stride = o_head_stride;
+    params.varlen_padded_input = varlen_padded_input;
+
+    if (cu_seqlens_q_d == nullptr ||  params.varlen_padded_input) {
+        params.q_batch_stride = q_batch_stride;
+        params.k_batch_stride = k_batch_stride;
+        params.v_batch_stride = v_batch_stride;
+        params.o_batch_stride = o_batch_stride;
+    }
+
+    params.cu_seqlens_q = static_cast<int *>(cu_seqlens_q_d);
+    params.cu_seqlens_k = static_cast<int *>(cu_seqlens_k_d);
+
+    // P = softmax(QK^T)
+    params.p_ptr = p_d;
+
+    // Softmax sum
+    params.softmax_lse_ptr = softmax_lse_d;
+
+    // Set the dimensions.
+    params.b = b;
+    params.h = h;
+    params.h_k = h_k;
+    params.h_h_k_ratio = h / h_k;
+    params.seqlen_q = seqlen_q;
+    params.seqlen_k = seqlen_k;
+    params.seqlen_q_rounded = seqlen_q_rounded;
+    params.seqlen_k_rounded = seqlen_k_rounded;
+    params.d = d;
+    params.d_rounded = d_rounded;
+
+    // attn mask
+    params.attn_mask_ptr = attn_mask;
+    params.mask_head_mod_size = mask_head_mod_size;
+    params.mask_seq_q_mod_size = mask_seq_q_mod_size;
+
+    // sparse mask row index
+    params.flashmask_downstart_ptr = flashmask_downstart_ptr;
+    params.flashmask_upend_ptr = flashmask_upend_ptr;
+    params.flashmask_downend_ptr = flashmask_downend_ptr;
+    params.flashmask_upstart_ptr = flashmask_upstart_ptr;
+    params.flashmask_maxmin_ptr = static_cast<int*>(flashmask_maxmin_ptr);
+    params.enable_mask_bypass = true;
+    if(flashmask_downstart_ptr != nullptr || flashmask_upend_ptr != nullptr) {
+        params.h_sparsemask = mask_head_mod_size;
+        params.h_h_sparsemask_ratio = h / mask_head_mod_size;
+        if (params.enable_mask_bypass){
+            TORCH_CHECK(params.flashmask_maxmin_ptr != nullptr);
+        }
+    }
+
+    // Set the different scale values.
+    params.scale_softmax = softmax_scale;
+    params.scale_softmax_log2 = softmax_scale * M_LOG2E;
+    params.unscale_softmax = softmax_unscale;
+
+    // Set this to probability of keeping an element to simplify things.
+    params.p_dropout = 1.f - p_dropout;
+    // Convert p from float to int so we don't have to convert the random uint to float to compare.
+    // [Minor] We want to round down since when we do the comparison we use <= instead of <
+    // params.p_dropout_in_uint = uint32_t(std::floor(params.p_dropout * 4294967295.0));
+    // params.p_dropout_in_uint16_t = uint16_t(std::floor(params.p_dropout * 65535.0));
+    params.p_dropout_in_uint8_t = uint8_t(std::floor(params.p_dropout * 255.0));
+    params.rp_dropout = 1.f / params.p_dropout;
+    params.scale_softmax_rp_dropout = params.rp_dropout * params.scale_softmax;
+    TORCH_CHECK(p_dropout < 1.f);
+
+    params.is_causal = is_causal;
+}
 
 void set_params_fprop(Flash_fwd_params &params,
                       // sizes
@@ -202,83 +334,171 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream) {
 }
 
 
-// void flashmask_fwd(
-//     // const Context& dev_ctx,
-//     const at::Tensor& q,
-//     const at::Tensor& k,
-//     const at::Tensor& v,    
-//     const at::optional<at::Tensor>& fixed_seed_offset,
-//     const at::optional<at::Tensor>& attn_mask,
-//     const at::optional<at::Tensor>& startend_row_indices,
-//     float dropout,
-//     bool causal,
-//     bool return_softmax,
-//     bool is_test,
-//     const std::string& rng_name,
-// ) {
-// // q, k, v [batch_size, seq_len, num_heads, head_dim]
-//     const auto& dims = q.sizes();
-//     const int batch_size = dims[0];
-//     const int seqlen_q = dims[1];
-//     const int num_heads = dims[2];
-//     const int head_size_og = dims[3];
-//     const int seqlen_k = k.size(1);
-//     const int num_heads_k = k.size(2);
-//     const float softmax_scale = 1.0f / std::sqrt(head_size);
-//     const float softmax_unscale = std::sqrt(head_size);
+void flashmask_fwd(
+    // const Context& dev_ctx,
+    const at::Tensor& q,
+    const at::Tensor& k,
+    const at::Tensor& v,    
+    const at::optional<at::Tensor>& fixed_seed_offset,
+    const at::optional<at::Tensor>& attn_mask,
+    const at::optional<at::Tensor>& startend_row_indices,
+    float dropout,
+    bool causal,
+    bool return_softmax,
+    bool is_test,
+    const std::string& rng_name,
+) {
+    
+// q, k, v [batch_size, seq_len, num_heads, head_dim]
+    const auto& dims = q.sizes();
+    const int batch_size = dims[0];
+    const int seqlen_q = dims[1];
+    const int num_heads = dims[2];
+    const int head_size_og = dims[3];
+    const int seqlen_k = k.size(1);
+    const int num_heads_k = k.size(2);
+    const float softmax_scale = 1.0f / std::sqrt(head_size);
+    const float softmax_unscale = std::sqrt(head_size);
 
-//     at::Tensor flashmask_maxmin, downstart_row_indices, upend_row_indices,
-//       downend_row_indices, upstart_row_indices;
-//     void *downstart_row_indices_data = nullptr, *upend_row_indices_data = nullptr,
-//        *downend_row_indices_data = nullptr, *upstart_row_indices_data = nullptr;
-//     bool is_flashmask = startend_row_indices.has_value();
+    TORCH_CHECK(batch_size > 0, "batch size must be postive");
+    TORCH_CHECK(head_size_og <= 256, "FlashAttention forward only supports head dimension at most 256");
+    TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
-//     // process flashmask params
-//     if (is_flashmask) {
-//     // PADDLE_ENFORCE_EQ(
-//     //     startend_row_indices->dims().size(),
-//     //     4,
-//     //     common::errors::InvalidArgument(
-//     //         "flashmask_attention receive startend_row_indices with dim "
-//     //         "[batch_size, num_heads,seq_len, mask_bounds]"));
-//     // assert(startend_row_indices->dims()[3] == 1 ||
-//     //                       startend_row_indices->dims()[3] == 2 ||
-//     //                       startend_row_indices->dims()[3] == 4,
-//     //                   true,
-//     //                   common::errors::InvalidArgument(
-//     //                       "flashmask_attention startend_row_indices "
-//     //                       "mask_bounds must in [1,2,4]"));
-//     auto flashmask_maxmin_shape = startend_row_indices.sizes();
-//     flashmask_maxmin_shape[2] = (flashmask_maxmin_shape[2] + 31) / 32 * 8;
-//     flashmask_maxmin.set_dtype(torch::kInt32);
-//     flashmask_maxmin.resize(flashmask_maxmin_shape);
+    CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size_og);
+    CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size_og);
+    CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size_og);
 
-//     downstart_row_indices =
-//         phi::Slice<int32_t>(dev_ctx, startend_row_indices.get(), {3}, {0}, {1});
-//     downstart_row_indices_data = downstart_row_indices.data();
-//     if (startend_row_indices->dims()[3] == 2) {
-//       if (!causal) {
-//         upend_row_indices = phi::Slice<int32_t>(
-//             dev_ctx, startend_row_indices.get(), {3}, {1}, {2});
-//         upend_row_indices_data = upend_row_indices.data();
-//       } else {
-//         downend_row_indices = phi::Slice<int32_t>(
-//             dev_ctx, startend_row_indices.get(), {3}, {1}, {2});
-//         downend_row_indices_data = downend_row_indices.data();
-//       }
-//     } else if (startend_row_indices->dims()[3] == 4) {
-//       upend_row_indices = phi::Slice<int32_t>(
-//           dev_ctx, startend_row_indices.get(), {3}, {3}, {4});
-//       upend_row_indices_data = upend_row_indices.data();
-//       downend_row_indices = phi::Slice<int32_t>(
-//           dev_ctx, startend_row_indices.get(), {3}, {1}, {2});
-//       downend_row_indices_data = downend_row_indices.data();
-//       upstart_row_indices = phi::Slice<int32_t>(
-//           dev_ctx, startend_row_indices.get(), {3}, {2}, {3});
-//       upstart_row_indices_data = upstart_row_indices.data();
-//     }
-//   }
-// }
+    // at::Tensor q_padded, k_padded, v_padded;
+    // if (head_size_og % 8 != 0) {
+    //     q_padded = torch::nn::functional::pad(q, torch::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
+    //     k_padded = torch::nn::functional::pad(k, torch::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
+    //     v_padded = torch::nn::functional::pad(v, torch::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
+    // } else {
+    //     q_padded = q;
+    //     k_padded = k;
+    //     v_padded = v;
+    // }
+
+    // at::Tensor out;
+    // if (out_.has_value()) {
+    //     out = out_.value();
+    //     TORCH_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
+    //     TORCH_CHECK(out.is_cuda(), "Output tensor must be on CUDA device");
+    //     TORCH_CHECK(out.stride(-1) == 1, "Output tensor must have contiguous last dimension");
+    //     CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size_og);
+    //     if (head_size_og % 8 != 0) { out = torch::empty_like(q_padded); }
+    // } else {
+        out = torch::empty_like(q_padded);
+    // }
+
+    auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+    const int head_size = round_multiple(head_size_og, 8);
+    const int head_size_rounded = round_multiple(head_size, 32);
+    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
+    const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
+
+    at::Tensor flashmask_maxmin, downstart_row_indices, upend_row_indices,
+      downend_row_indices, upstart_row_indices;
+    void *downstart_row_indices_data = nullptr, *upend_row_indices_data = nullptr,
+       *downend_row_indices_data = nullptr, *upstart_row_indices_data = nullptr;
+    bool is_flashmask = startend_row_indices.has_value();
+
+    // process flashmask params
+    if (is_flashmask) {
+    // PADDLE_ENFORCE_EQ(
+    //     startend_row_indices->dims().size(),
+    //     4,
+    //     common::errors::InvalidArgument(
+    //         "flashmask_attention receive startend_row_indices with dim "
+    //         "[batch_size, num_heads,seq_len, mask_bounds]"));
+    // assert(startend_row_indices->dims()[3] == 1 ||
+    //                       startend_row_indices->dims()[3] == 2 ||
+    //                       startend_row_indices->dims()[3] == 4,
+    //                   true,
+    //                   common::errors::InvalidArgument(
+    //                       "flashmask_attention startend_row_indices "
+    //                       "mask_bounds must in [1,2,4]"));
+    auto flashmask_maxmin_shape = startend_row_indices.sizes();
+    flashmask_maxmin_shape[2] = (flashmask_maxmin_shape[2] + 31) / 32 * 8;
+    flashmask_maxmin.set_dtype(torch::kInt32);
+    flashmask_maxmin.resize(flashmask_maxmin_shape);
+
+
+    downstart_row_indices = startend_row_indices.narrow(3, 0, 1);
+    downstart_row_indices_data = downstart_row_indices.data_ptr();
+
+    // downstart_row_indices_data = downstart_row_indices.data();
+    // downstart_row_indices_data = downstart_row_indices.data();
+    if (startend_row_indices->dims()[3] == 2) {
+      if (!causal) {
+        upend_row_indices = startend_row_indices.narrow(3, 1, 1);
+        upend_row_indices_data = upend_row_indices.data_ptr();
+      } else {
+        downend_row_indices = startend_row_indices.narrow(3, 1, 1);
+        downend_row_indices_data = downend_row_indices.data_ptr();
+      }
+    } else if (startend_row_indices->dims()[3] == 4) {
+      upend_row_indices = startend_row_indices.narrow(3, 3, 1);
+      upend_row_indices_data = upend_row_indices.data_ptr();
+      downend_row_indices = startend_row_indices.narrow(3, 1, 1);
+      downend_row_indices_data = downend_row_indices.data_ptr();
+      upstart_row_indices = startend_row_indices.narrow(3, 2, 1);
+      upstart_row_indices_data = upstart_row_indices.data_ptr();
+    }
+  }
+  Flash_fwd_params params;
+  //TODO fix this
+  int max_seqlen_q = 0;
+  int max_seqlen_k = 0
+set_params_fprop_strided(Flash_fwd_params &params,
+                      // sizes
+                      batch_size,
+                      seqlen_q,
+                      seqlen_k,
+                      seqlen_q_rounded,
+                      seqlen_k_rounded,
+                      num_heads,
+                      num_heads_k,
+                      head_size,
+                      head_size_rounded,
+                      // device pointers
+                      q,
+                      k,
+                      v,
+                      out,
+                      nullptr,  // cu_seqlens_q_d
+                      nullptr,  // cu_seqlens_k_d
+                      nullptr,  // p_d
+                      nullptr,  // softmax_lse_d
+                      dropout,
+                      softmax_scale,
+                      softmax_unscale,
+                      causal,
+                      q.dtype() == torch::kBFloat16,
+                      q.stride(0),
+                      k.stride(0),
+                      v.stride(0),
+                      q.stride(1),
+                      k.stride(1),
+                      v.stride(1),
+                      out.stride(0),
+                      out.stride(1),
+                      q.stride(0),
+                      k.stride(0),
+                      v.stride(0),
+                      out.stride(0),
+                      false, //varlen_padded_input
+                      attn_mask.data_ptr(),
+                      downstart_row_indices_data,
+                      upstart_row_indices_data,
+                      downend_row_indices_data,
+                      upend_row_indices_data,
+                      flashmask_maxmin.data_ptr(),
+                      0, // mask_head_mod_size
+                      0) // mask_seq_q_mod_size
+
+
+}
 
 std::vector<at::Tensor>
 mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
