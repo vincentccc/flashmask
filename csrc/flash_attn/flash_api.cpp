@@ -334,7 +334,7 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream) {
 }
 
 
-void flashmask_fwd(
+std::vector<at::Tensor> flashmask_fwd(
     // const Context& dev_ctx,
     const at::Tensor& q,
     const at::Tensor& k,
@@ -346,8 +346,7 @@ void flashmask_fwd(
     bool causal,
     bool return_softmax,
     bool is_test,
-    const std::string& rng_name,
-) {
+    const std::string& rng_name) {
     
 // q, k, v [batch_size, seq_len, num_heads, head_dim]
     const auto& dims = q.sizes();
@@ -357,8 +356,6 @@ void flashmask_fwd(
     const int head_size_og = dims[3];
     const int seqlen_k = k.size(1);
     const int num_heads_k = k.size(2);
-    const float softmax_scale = 1.0f / std::sqrt(head_size);
-    const float softmax_unscale = std::sqrt(head_size);
 
     TORCH_CHECK(batch_size > 0, "batch size must be postive");
     TORCH_CHECK(head_size_og <= 256, "FlashAttention forward only supports head dimension at most 256");
@@ -379,7 +376,7 @@ void flashmask_fwd(
     //     v_padded = v;
     // }
 
-    // at::Tensor out;
+    at::Tensor out;
     // if (out_.has_value()) {
     //     out = out_.value();
     //     TORCH_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
@@ -388,7 +385,7 @@ void flashmask_fwd(
     //     CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size_og);
     //     if (head_size_og % 8 != 0) { out = torch::empty_like(q_padded); }
     // } else {
-        out = torch::empty_like(q_padded);
+        out = torch::empty_like(q);
     // }
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
@@ -396,6 +393,8 @@ void flashmask_fwd(
     const int head_size_rounded = round_multiple(head_size, 32);
     const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
     const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
+    const float softmax_scale = 1.0f / std::sqrt(head_size);
+    const float softmax_unscale = std::sqrt(head_size);
 
     at::Tensor flashmask_maxmin, downstart_row_indices, upend_row_indices,
       downend_row_indices, upstart_row_indices;
@@ -418,85 +417,114 @@ void flashmask_fwd(
     //                   common::errors::InvalidArgument(
     //                       "flashmask_attention startend_row_indices "
     //                       "mask_bounds must in [1,2,4]"));
-    auto flashmask_maxmin_shape = startend_row_indices.sizes();
-    flashmask_maxmin_shape[2] = (flashmask_maxmin_shape[2] + 31) / 32 * 8;
-    flashmask_maxmin.set_dtype(torch::kInt32);
-    flashmask_maxmin.resize(flashmask_maxmin_shape);
+    at::Tensor startend_row_indices_tensor;
+    if (startend_row_indices.has_value()) {
+        startend_row_indices_tensor = startend_row_indices.value();
+    }
+    auto flashmask_maxmin_shape_vec = startend_row_indices_tensor.sizes().vec();
+    flashmask_maxmin_shape_vec[2] = (flashmask_maxmin_shape_vec[2] + 31) / 32 * 8;
+
+    flashmask_maxmin = flashmask_maxmin
+        .to(torch::kInt32)
+        .resize_(flashmask_maxmin_shape_vec);
 
 
-    downstart_row_indices = startend_row_indices.narrow(3, 0, 1);
+    downstart_row_indices = startend_row_indices_tensor.narrow(3, 0, 1);
     downstart_row_indices_data = downstart_row_indices.data_ptr();
 
     // downstart_row_indices_data = downstart_row_indices.data();
     // downstart_row_indices_data = downstart_row_indices.data();
-    if (startend_row_indices->dims()[3] == 2) {
+    if (startend_row_indices_tensor.size(3) == 2) {
       if (!causal) {
-        upend_row_indices = startend_row_indices.narrow(3, 1, 1);
+        upend_row_indices = startend_row_indices_tensor.narrow(3, 1, 1);
         upend_row_indices_data = upend_row_indices.data_ptr();
       } else {
-        downend_row_indices = startend_row_indices.narrow(3, 1, 1);
+        downend_row_indices = startend_row_indices_tensor.narrow(3, 1, 1);
         downend_row_indices_data = downend_row_indices.data_ptr();
       }
-    } else if (startend_row_indices->dims()[3] == 4) {
-      upend_row_indices = startend_row_indices.narrow(3, 3, 1);
+    } else if (startend_row_indices_tensor.size(3) == 4) {
+      upend_row_indices = startend_row_indices_tensor.narrow(3, 3, 1);
       upend_row_indices_data = upend_row_indices.data_ptr();
-      downend_row_indices = startend_row_indices.narrow(3, 1, 1);
+      downend_row_indices = startend_row_indices_tensor.narrow(3, 1, 1);
       downend_row_indices_data = downend_row_indices.data_ptr();
-      upstart_row_indices = startend_row_indices.narrow(3, 2, 1);
+      upstart_row_indices = startend_row_indices_tensor.narrow(3, 2, 1);
       upstart_row_indices_data = upstart_row_indices.data_ptr();
     }
   }
   Flash_fwd_params params;
   //TODO fix this
   int max_seqlen_q = 0;
-  int max_seqlen_k = 0
-set_params_fprop_strided(Flash_fwd_params &params,
-                      // sizes
-                      batch_size,
-                      seqlen_q,
-                      seqlen_k,
-                      seqlen_q_rounded,
-                      seqlen_k_rounded,
-                      num_heads,
-                      num_heads_k,
-                      head_size,
-                      head_size_rounded,
-                      // device pointers
-                      q,
-                      k,
-                      v,
-                      out,
-                      nullptr,  // cu_seqlens_q_d
-                      nullptr,  // cu_seqlens_k_d
-                      nullptr,  // p_d
-                      nullptr,  // softmax_lse_d
-                      dropout,
-                      softmax_scale,
-                      softmax_unscale,
-                      causal,
-                      q.dtype() == torch::kBFloat16,
-                      q.stride(0),
-                      k.stride(0),
-                      v.stride(0),
-                      q.stride(1),
-                      k.stride(1),
-                      v.stride(1),
-                      out.stride(0),
-                      out.stride(1),
-                      q.stride(0),
-                      k.stride(0),
-                      v.stride(0),
-                      out.stride(0),
-                      false, //varlen_padded_input
-                      attn_mask.data_ptr(),
-                      downstart_row_indices_data,
-                      upstart_row_indices_data,
-                      downend_row_indices_data,
-                      upend_row_indices_data,
-                      flashmask_maxmin.data_ptr(),
-                      0, // mask_head_mod_size
-                      0) // mask_seq_q_mod_size
+  int max_seqlen_k = 0;
+    set_params_fprop_strided(params,
+                        // sizes
+                        batch_size,
+                        seqlen_q,
+                        seqlen_k,
+                        seqlen_q_rounded,
+                        seqlen_k_rounded,
+                        num_heads,
+                        num_heads_k,
+                        head_size,
+                        head_size_rounded,
+                        // device pointers
+                        q.data_ptr(),
+                        k.data_ptr(),
+                        v.data_ptr(),
+                        out.data_ptr(),
+                        nullptr,  // cu_seqlens_q_d
+                        nullptr,  // cu_seqlens_k_d
+                        nullptr,  // p_d
+                        nullptr,  // softmax_lse_d
+                        dropout,
+                        softmax_scale,
+                        softmax_unscale,
+                        causal,
+                        q.dtype() == torch::kBFloat16,
+                        q.stride(0),
+                        k.stride(0),
+                        v.stride(0),
+                        q.stride(1),
+                        k.stride(1),
+                        v.stride(1),
+                        out.stride(0),
+                        out.stride(1),
+                        q.stride(0),
+                        k.stride(0),
+                        v.stride(0),
+                        out.stride(0),
+                        false, //varlen_padded_input
+                        attn_mask.has_value() ? attn_mask.value().data_ptr() : nullptr,
+                        downstart_row_indices_data,
+                        upstart_row_indices_data,
+                        downend_row_indices_data,
+                        upend_row_indices_data,
+                        flashmask_maxmin.data_ptr(),
+                        0, // mask_head_mod_size
+                        0); // mask_seq_q_mod_size
 
+
+ // number of times random will be generated per thread, to offset philox counter in thc random
+    // state
+    // We use a custom RNG that increases the offset by batch_size * nheads * 32.
+    int64_t counter_offset = params.b * params.h * 32;
+    auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+    auto rng_state = torch::empty({2}, options.dtype(torch::kInt64));
+    // Forward kernel will populate memory with the seed and offset.
+    params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
+
+    // if (p_dropout > 0.0)  {
+    //     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
+    //         gen_, at::cuda::detail::getDefaultCUDAGenerator());
+    //     // See Note [Acquire lock when using random generators]
+    //     std::lock_guard<std::mutex> lock(gen->mutex_);
+    //     params.philox_args = gen->philox_cuda_state(counter_offset);
+    // }
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    run_mha_fwd(params, stream);
+
+    // return {out, q, k, v, out, softmax_lse, p, rng_state};
+    return {out, q, k, v, out};
 
 }
 
@@ -1231,6 +1259,7 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "FlashAttention";
     m.def("fwd", &mha_fwd, "Forward pass");
+    m.def("flashmask_fwd", &flashmask_fwd, "Flashmask forward pass");
     // m.def("varlen_fwd", &mha_varlen_fwd, "Forward pass (variable length)");
     // m.def("bwd", &mha_bwd, "Backward pass");
     // m.def("varlen_bwd", &mha_varlen_bwd, "Backward pass (variable length)");
