@@ -1,4 +1,3 @@
-# Adapted from https://github.com/NVIDIA/apex/blob/master/setup.py
 import sys
 import warnings
 import os
@@ -158,10 +157,10 @@ if not SKIP_CUDA_BUILD:
     if FORCE_CXX11_ABI:
         torch._C._GLIBCXX_USE_CXX11_ABI = True
     import glob
-    flash_cu_files = glob.glob("csrc/flash_attn/src/flash_*.cu")
+    flash_cu_files = glob.glob("csrc/flash_attn/src/flash_*_hdim128_bf16*_flashmask*.cu")
     ext_modules.append(
         CUDAExtension(
-            name="flash_attn_2_cuda",
+            name="flash_maskattn_2_cuda",
             sources=[
                 *flash_cu_files,
                 "csrc/flash_attn/flash_api.cpp", 
@@ -287,17 +286,9 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Dao-AILab/flash-attention",
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: BSD License",
-        "Operating System :: Unix",
-    ],
     ext_modules=ext_modules,
     cmdclass={
-        'bdist_wheel': CachedWheelsCommand,
         "build_ext": BuildExtension
-    } if ext_modules else {
-        'bdist_wheel': CachedWheelsCommand,
     },
     python_requires=">=3.7",
     install_requires=[
@@ -307,3 +298,4 @@ setup(
         "ninja",
     ],
 )
+
